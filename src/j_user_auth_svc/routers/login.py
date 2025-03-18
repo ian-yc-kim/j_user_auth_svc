@@ -269,3 +269,50 @@ async def apple_login(request: AppleLoginRequest, db: Session = Depends(get_db))
     except Exception as e:
         logging.error(e, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+class TwitterLoginRequest(BaseModel):
+    """
+    Pydantic model for Twitter social login request containing the access token.
+    """
+    access_token: str
+
+
+@router.post("/login/twitter", response_model=LoginResponse)
+async def twitter_login(request: TwitterLoginRequest, db: Session = Depends(get_db)):
+    """
+    Twitter social login endpoint.
+
+    Accepts a JSON payload with an 'access_token', validates the token through Twitter's OAuth endpoint,
+    extracts the user's email or username, and verifies the user in the database.
+
+    If the user is registered with Twitter (hashed_password == "twitter_social"), returns a session token.
+    If the user exists but with a different provider, returns HTTP 401 indicating a provider mismatch.
+    If the user does not exist, returns HTTP 401 (new user creation is not implemented).
+
+    Error Handling:
+      - Catches network errors and unexpected exceptions, logging detailed errors and returning appropriate HTTP status codes.
+    """
+    try:
+        token_data = await validate_social_token("twitter", request.access_token)
+        identifier = token_data.get("email") or token_data.get("user")
+        if not identifier:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identifier not found in token response")
+
+        stmt = select(User).filter(User.email == identifier)
+        result = db.execute(stmt)
+        user = result.scalars().first()
+
+        if user:
+            if user.hashed_password == "twitter_social":
+                token = create_session_token(user)
+                return LoginResponse(session_token=token)
+            else:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Provider mismatch: user not registered with Twitter")
+        else:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found. New user creation is not implemented")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
