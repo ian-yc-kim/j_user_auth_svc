@@ -173,3 +173,54 @@ async def validate_social_token(provider: str, access_token: str) -> dict:
     except Exception as e:
         logging.error(e, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+class GoogleLoginRequest(BaseModel):
+    """
+    Pydantic model for Google social login request containing the access token.
+    """
+    access_token: str
+
+
+@router.post("/login/google", response_model=LoginResponse)
+async def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
+    """
+    Google social login endpoint.
+
+    Accepts a JSON payload with an 'access_token', validates the token through Google's OAuth endpoint,
+    extracts the user's email, and verifies the user in the database.
+
+    Returns:
+      - HTTP 200 with a session token if successful.
+      - HTTP 401 if token is invalid, provider mismatches, or user is not found.
+      - HTTP 500 for unexpected errors.
+    
+    Note: New user creation can be optionally implemented if user does not exist.
+    """
+    try:
+        # Validate the social token with provider 'google'
+        token_data = await validate_social_token("google", request.access_token)
+        email = token_data.get("email")
+        if not email:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email not found in token response")
+
+        # Query the database for a user with the extracted email
+        stmt = select(User).filter(User.email == email)
+        result = db.execute(stmt)
+        user = result.scalars().first()
+
+        if user:
+            # Check if the user was registered via Google social login (using sentinel value 'google_social')
+            if user.hashed_password == "google_social":
+                session_token = create_session_token(user)
+                return LoginResponse(session_token=session_token)
+            else:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Provider mismatch: user not registered with Google")
+        else:
+            # User not found; new user creation may be optionally implemented according to business rules
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found. New user creation is not implemented")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(e, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
